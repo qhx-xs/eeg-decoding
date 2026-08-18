@@ -3,6 +3,8 @@ from __future__ import annotations
 import copy
 import json
 import random
+import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -149,8 +151,12 @@ def train_fold(
     split: dict[str, torch.Tensor | int],
     task: str,
     config: dict[str, Any],
-    output_dir: Path,
+    output_dir: Path | None,
     device: torch.device,
+    *,
+    save_artifacts: bool = True,
+    evaluate_test: bool = True,
+    verbose: bool = True,
 ) -> dict[str, Any]:
     fold = int(split["fold"])
     seed = int(config["seed"]) + fold
@@ -175,26 +181,33 @@ def train_fold(
         classifier_dropout=float(config["classifier_dropout"]),
     ).to(device)
     criterion = nn.CrossEntropyLoss(
-        weight=class_weights(labels, train_indices, num_classes).to(device)
+        weight=class_weights(labels, train_indices, num_classes).to(device),
+        label_smoothing=float(config.get("label_smoothing", 0.0)),
     )
     optimizer = torch.optim.AdamW(
         model.parameters(),
         lr=float(config["learning_rate"]),
         weight_decay=float(config["weight_decay"]),
     )
-    scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
         optimizer,
-        mode="max",
-        factor=float(config["lr_decay_factor"]),
-        patience=int(config["lr_patience"]),
+        T_max=int(config["max_epochs"]),
+        eta_min=float(config.get("minimum_learning_rate", 1e-6)),
     )
 
     best_score = -1.0
     best_epoch = -1
     best_state = None
-    epochs_without_improvement = 0
     history = []
+    training_started = time.perf_counter()
+    if verbose:
+        print(
+            f"\n=== fold {fold} | task={task} | epochs={config['max_epochs']} | "
+            f"train={len(split['train'])} val={len(split['val'])} test={len(split['test'])} ===",
+            flush=True,
+        )
     for epoch in range(int(config["max_epochs"])):
+        epoch_started = time.perf_counter()
         model.train()
         total_loss = 0.0
         total_samples = 0
@@ -212,31 +225,38 @@ def train_fold(
 
         val_metrics = _evaluate(model, loaders["val"], dataset, task, num_classes, device)
         val_score = float(val_metrics["phase_or_trial"]["macro_f1"])
-        scheduler.step(val_score)
+        scheduler.step()
+        average_loss = total_loss / total_samples
         history.append(
             {
                 "epoch": epoch + 1,
-                "train_loss": total_loss / total_samples,
+                "train_loss": average_loss,
                 "val_phase_macro_f1": val_score,
                 "learning_rate": optimizer.param_groups[0]["lr"],
+                "seconds": time.perf_counter() - epoch_started,
             }
         )
-        if val_score > best_score + float(config["early_stopping_min_delta"]):
+        if val_score > best_score:
             best_score = val_score
             best_epoch = epoch + 1
             best_state = copy.deepcopy({key: value.detach().cpu() for key, value in model.state_dict().items()})
-            epochs_without_improvement = 0
-        else:
-            epochs_without_improvement += 1
-        if epochs_without_improvement >= int(config["early_stopping_patience"]):
-            break
+        log_every = max(1, int(config.get("log_every_epochs", 10)))
+        if verbose and ((epoch + 1) == 1 or (epoch + 1) % log_every == 0 or (epoch + 1) == int(config["max_epochs"])):
+            print(
+                f"fold={fold} epoch={epoch + 1:03d}/{config['max_epochs']} "
+                f"loss={average_loss:.4f} val_macro_f1={val_score:.4f} "
+                f"best={best_score:.4f}@{best_epoch} lr={optimizer.param_groups[0]['lr']:.2e} "
+                f"time={history[-1]['seconds']:.2f}s",
+                flush=True,
+            )
 
     if best_state is None:
         raise RuntimeError("Training did not produce a checkpoint")
     model.load_state_dict(best_state)
+    metric_names = ("train", "val", "test") if evaluate_test else ("train", "val")
     split_metrics = {
         name: _evaluate(model, loaders[name], dataset, task, num_classes, device)
-        for name in ("train", "val", "test")
+        for name in metric_names
     }
     qc_counts = {
         name: int(dataset["qc_flag"][split[name]].sum().item()) for name in ("train", "val", "test")
@@ -245,33 +265,37 @@ def train_fold(
         "fold": fold,
         "best_epoch": best_epoch,
         "best_validation_phase_macro_f1": best_score,
+        "epochs_ran": len(history),
+        "training_seconds": time.perf_counter() - training_started,
         "metrics": split_metrics,
         "qc_flagged_windows": qc_counts,
         "subset_window_counts": {name: int(len(split[name])) for name in ("train", "val", "test")},
         "history": history,
     }
-    output_dir.mkdir(parents=True, exist_ok=True)
-    torch.save(
-        {
-            "model_state": best_state,
-            "normalization_mean": mean,
-            "normalization_std": std,
-            "task": task,
-            "num_classes": num_classes,
-            "model_config": {
-                key: config[key]
-                for key in (
-                    "lstm_hidden_size",
-                    "lstm_layers",
-                    "lstm_dropout",
-                    "classifier_dropout",
-                )
+    if save_artifacts:
+        if output_dir is None:
+            raise ValueError("output_dir is required when save_artifacts=True")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        torch.save(
+            {
+                "model_state": best_state,
+                "normalization_mean": mean,
+                "normalization_std": std,
+                "task": task,
+                "num_classes": num_classes,
+                "training_config": dict(config),
+                "dataset_format_version": dataset["format_version"],
+                "fold": fold,
+                "best_epoch": best_epoch,
             },
-            "dataset_format_version": dataset["format_version"],
-            "fold": fold,
-        },
-        output_dir / f"fold_{fold}.pt",
-    )
+            output_dir / f"fold_{fold}.pt",
+        )
+    if verbose:
+        print(
+            f"fold {fold} complete: trained {len(history)} epochs, "
+            f"best validation Macro-F1={best_score:.4f} at epoch {best_epoch}",
+            flush=True,
+        )
     return result
 
 
@@ -290,6 +314,43 @@ def _aggregate_cv(results: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
+def save_cross_validation_report(
+    dataset: dict[str, Any],
+    task: str,
+    cv: str,
+    fold_results: list[dict[str, Any]],
+    training_config: dict[str, Any] | list[dict[str, Any]],
+    run_dir: Path,
+    device: torch.device,
+    run_name: str,
+) -> dict[str, Any]:
+    report = {
+        "task": task,
+        "cv": cv,
+        "device": str(device),
+        "run_name": run_name,
+        "training_config": training_config,
+        "fold_count": len(fold_results),
+        "primary_metric_level": "phase_or_trial",
+        "folds": fold_results,
+        "test_summary": _aggregate_cv(fold_results),
+    }
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "metrics.json").write_text(
+        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    from .reporting import save_cv_artifacts
+
+    class_names = (
+        dataset["metadata"]["four_class_names"]
+        if task == "four_class"
+        else dataset["metadata"]["object_names"]
+    )
+    save_cv_artifacts(report, run_dir, list(class_names))
+    print(f"\nResults and confusion matrices saved to: {run_dir}", flush=True)
+    return report
+
+
 def run_cross_validation(
     dataset_path: Path,
     task: str,
@@ -303,21 +364,18 @@ def run_cross_validation(
     if requested_device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available; run training on the GPU server")
     device = torch.device(requested_device)
-    run_dir = output_root / f"{task}_{cv}"
+    run_name = str(config.get("run_name") or datetime.now().strftime("%Y%m%d_%H%M%S"))
+    run_dir = output_root / f"{task}_{cv}_{run_name}"
     fold_results = [
         train_fold(dataset, split, task, config, run_dir, device) for split in splits
     ]
-    report = {
-        "task": task,
-        "cv": cv,
-        "device": str(device),
-        "fold_count": len(fold_results),
-        "primary_metric_level": "phase_or_trial",
-        "folds": fold_results,
-        "test_summary": _aggregate_cv(fold_results),
-    }
-    run_dir.mkdir(parents=True, exist_ok=True)
-    (run_dir / "metrics.json").write_text(
-        json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8"
+    return save_cross_validation_report(
+        dataset,
+        task,
+        cv,
+        fold_results,
+        dict(config),
+        run_dir,
+        device,
+        run_name,
     )
-    return report

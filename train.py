@@ -14,9 +14,17 @@ def main() -> int:
     parser.add_argument("--cv", required=True, choices=("run", "trial"))
     parser.add_argument("--config", type=Path, default=Path("configs/train.json"))
     parser.add_argument("--output", type=Path, default=Path("outputs"))
+    parser.add_argument("--epochs", type=int, help="Override fixed epoch count (early stopping is disabled)")
+    parser.add_argument("--run-name", help="Stable suffix for the output directory")
     args = parser.parse_args()
 
     config = json.loads(args.config.read_text(encoding="utf-8"))
+    if args.epochs is not None:
+        if args.epochs <= 0:
+            parser.error("--epochs must be positive")
+        config["max_epochs"] = args.epochs
+    if args.run_name:
+        config["run_name"] = args.run_name
     report = run_cross_validation(
         dataset_path=args.data.resolve(),
         task=args.task,
