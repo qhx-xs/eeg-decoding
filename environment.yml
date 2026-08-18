@@ -14,3 +14,4 @@ dependencies:
   - ipykernel>=6.29
   - tqdm>=4.66
   - tensorboard>=2.17
+  - optuna>=4.0

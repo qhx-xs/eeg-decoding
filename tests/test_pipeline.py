@@ -9,6 +9,7 @@ import torch
 
 from EEG_Model import EEG_CNN_BiLSTM_Attention
 from eeg_pipeline.preprocessing import TrialValidationError, build_trials, extract_log_bandpower
+from eeg_pipeline.reporting import save_cv_artifacts
 from eeg_pipeline.splits import build_cv_splits, make_trial_fold_assignment
 from eeg_pipeline.training import load_pt_dataset, metrics_from_logits
 from inspect_edf import parse_tal, read_header
@@ -169,6 +170,43 @@ class ModelTests(unittest.TestCase):
             with torch.no_grad():
                 output = model(samples)
             self.assertEqual(tuple(output.shape), (2, class_count))
+
+
+class ReportingTests(unittest.TestCase):
+    def test_confusion_matrix_and_learning_curve_files(self):
+        metrics = {
+            "phase_or_trial": {"confusion_matrix": [[2, 1], [0, 3]]},
+            "window": {"confusion_matrix": [[5, 2], [1, 4]]},
+        }
+        report = {
+            "task": "imagery_binary",
+            "cv": "run",
+            "folds": [
+                {
+                    "fold": 0,
+                    "metrics": {"test": metrics},
+                    "history": [
+                        {
+                            "epoch": 1,
+                            "train_loss": 0.8,
+                            "val_phase_macro_f1": 0.5,
+                        }
+                    ],
+                }
+            ],
+        }
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir)
+            save_cv_artifacts(report, output, ["apple", "hammer"])
+            for name in (
+                "confusion_phase_or_trial.png",
+                "confusion_phase_or_trial_counts.csv",
+                "confusion_phase_or_trial_normalized.csv",
+                "confusion_window.png",
+                "fold_0_confusion_phase_or_trial.png",
+                "learning_curves.png",
+            ):
+                self.assertGreater((output / name).stat().st_size, 0)
 
 
 if __name__ == "__main__":

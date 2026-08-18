@@ -55,9 +55,42 @@ python train.py --data data/sub03_eeg.pt --task four_class --cv trial
 python train.py --data data/sub03_eeg.pt --task imagery_binary --cv trial
 ```
 
-每折以验证集 phase/trial macro-F1 早停。主要指标先平均同一阶段的三个窗口 logits，
-窗口级指标仅作为辅助。训练配置位于 `configs/train.json`，默认要求 CUDA；若只做合成调试，
-可复制配置并把 `device` 改成 `cpu`。
+默认固定训练 200 轮，不早停；训练结束后仍选择验证集 phase/trial macro-F1 最高的那一轮作为
+该折模型，测试集不参与选模型。可临时指定轮数和实验名：
+
+```bash
+python train.py --data data/sub03_eeg.pt --task four_class --cv run \
+  --epochs 300 --run-name four_class_300
+```
+
+主要指标先平均同一阶段的三个窗口 logits，窗口级指标仅作为辅助。每次训练会在独立输出目录保存：
+
+- `metrics.json`：逐折指标、均值、标准差和完整训练历史
+- `learning_curves.png`：训练损失和验证集 Macro-F1 曲线
+- `confusion_phase_or_trial.png`：主要结果的聚合混淆矩阵（计数及按行归一化）
+- `confusion_window.png`：辅助的窗口级混淆矩阵
+- `fold_*_confusion_*.png`：每一折的混淆矩阵
+- 对应的 `confusion_*.csv` 及每折最优 checkpoint
+
+训练配置位于 `configs/train.json`，默认要求 CUDA；若只做合成调试，可复制配置并把 `device`
+改成 `cpu`。
+
+## Optuna 参数搜索
+
+`search.py` 用 TPE 贝叶斯优化搜索学习率、权重衰减、batch size、LSTM 宽度/层数、dropout
+和 label smoothing。每个候选参数都跑完整的 run 四折，只根据验证集 Macro-F1 评分；搜索期间
+不读取测试指标，避免拿测试集调参。搜索结束后会用最佳参数固定训练 200 轮并生成上述混淆矩阵：
+
+```bash
+python search.py --data data/sub03_eeg.pt --task four_class --cv run \
+  --trials 24 --search-epochs 60 --final-epochs 200
+
+python search.py --data data/sub03_eeg.pt --task imagery_binary --cv run \
+  --trials 24 --search-epochs 60 --final-epochs 200
+```
+
+搜索状态保存在 `outputs/search/<task>_<cv>/study.db`，中断后运行同一条命令会继续，而不是
+从头搜索。`best_config.json` 和 `search_summary.json` 保存最佳参数与分数。
 
 ## 测试
 
