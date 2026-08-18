@@ -15,8 +15,8 @@ CNN-BiLSTM-Attention 完成四分类与想象二分类。数据、模型权重�
 
 ## 服务器环境
 
-已验证服务器的 IsaacLab 环境请直接按照 [REMOTE_QUICKSTART.md](REMOTE_QUICKSTART.md) 操作；该文档会
-避免升级 IsaacLab 固定的 PyTorch、CUDA 和 NumPy。
+已验证服务器请直接按照 [REMOTE_QUICKSTART.md](REMOTE_QUICKSTART.md) 操作。该文档会创建独立的
+`deep-learning` Conda 环境，不会修改 IsaacLab，并包含代理、clone、RTX 5090 GPU PyTorch、PT 上传和训练步骤。
 
 建议 Python 3.11 或 3.12，并根据服务器 CUDA 版本先从
 [PyTorch 官方安装页](https://pytorch.org/get-started/locally/)安装对应的 PyTorch，再安装其余依赖：

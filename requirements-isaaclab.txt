@@ -1,4 +1,0 @@
-# IsaacLab already provides CUDA-enabled PyTorch and NumPy. Do not list or
-# upgrade them here because that can break IsaacLab's pinned environment.
-scipy>=1.10,<2
-scikit-learn>=1.3,<2
