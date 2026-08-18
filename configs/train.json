@@ -1,0 +1,17 @@
+{
+  "device": "cuda",
+  "seed": 42,
+  "batch_size": 32,
+  "max_epochs": 200,
+  "learning_rate": 0.001,
+  "weight_decay": 0.0001,
+  "gradient_clip_norm": 5.0,
+  "lr_decay_factor": 0.5,
+  "lr_patience": 6,
+  "early_stopping_patience": 20,
+  "early_stopping_min_delta": 0.0001,
+  "lstm_hidden_size": 128,
+  "lstm_layers": 2,
+  "lstm_dropout": 0.5,
+  "classifier_dropout": 0.5
+}

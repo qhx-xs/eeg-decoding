@@ -1,0 +1,26 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Raw and derived EEG data
+*.edf
+*.EDF
+*.mat
+*.pt
+*.pth
+data/
+legacy_data/
+
+# Training artifacts and local reports
+outputs/
+checkpoints/
+edf_report.json
+*.summary.json
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
