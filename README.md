@@ -77,9 +77,10 @@ python train.py --data data/sub03_eeg.pt --task four_class --cv run \
 
 ## Optuna 参数搜索
 
-`search.py` 用 TPE 贝叶斯优化搜索学习率、权重衰减、batch size、LSTM 宽度/层数、dropout
-和 label smoothing。每个候选参数都跑完整的 run 四折，只根据验证集 Macro-F1 评分；搜索期间
-不读取测试指标，避免拿测试集调参。搜索结束后会用最佳参数固定训练 200 轮并生成上述混淆矩阵：
+`search.py` 用嵌套 TPE 贝叶斯优化搜索学习率、权重衰减、batch size、LSTM 宽度/层数、dropout
+和 label smoothing。每个外层测试 fold 都单独在其训练/验证数据上搜索参数，当前测试 fold 在搜索
+期间完全不可见。这样不会因为同一个 run 在另一折充当验证集而间接泄漏测试信息。搜索结束后会
+用每个外层 fold 各自的最佳参数固定训练 200 轮并生成上述混淆矩阵：
 
 ```bash
 python search.py --data data/sub03_eeg.pt --task four_class --cv run \
@@ -89,8 +90,9 @@ python search.py --data data/sub03_eeg.pt --task imagery_binary --cv run \
   --trials 24 --search-epochs 60 --final-epochs 200
 ```
 
-搜索状态保存在 `outputs/search/<task>_<cv>/study.db`，中断后运行同一条命令会继续，而不是
-从头搜索。`best_config.json` 和 `search_summary.json` 保存最佳参数与分数。
+搜索状态保存在 `outputs/search_nested/<task>_<cv>/study.db`，中断后运行同一条命令会继续，
+而不是从头搜索。`best_configs.json`、`fold_*_trials.json` 和 `search_summary.json` 保存各外层
+fold 的最佳参数、全部候选与分数。
 
 ## 测试
 

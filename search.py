@@ -5,20 +5,23 @@ import json
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import optuna
 import torch
 
 from eeg_pipeline.splits import build_cv_splits
-from eeg_pipeline.training import load_pt_dataset, run_cross_validation, train_fold
+from eeg_pipeline.training import (
+    load_pt_dataset,
+    save_cross_validation_report,
+    train_fold,
+)
 
 
-def candidate_config(trial: optuna.Trial, base: dict[str, Any], search_epochs: int) -> dict[str, Any]:
+def candidate_config(trial: optuna.Trial, base: dict[str, Any], epochs: int) -> dict[str, Any]:
     config = dict(base)
     lstm_layers = trial.suggest_int("lstm_layers", 1, 2)
     config.update(
         {
-            "max_epochs": search_epochs,
+            "max_epochs": epochs,
             "learning_rate": trial.suggest_float("learning_rate", 1e-5, 3e-3, log=True),
             "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True),
             "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64]),
@@ -34,10 +37,29 @@ def candidate_config(trial: optuna.Trial, base: dict[str, Any], search_epochs: i
             "classifier_dropout": trial.suggest_float(
                 "classifier_dropout", 0.1, 0.6, step=0.1
             ),
-            "label_smoothing": trial.suggest_float("label_smoothing", 0.0, 0.2, step=0.05),
+            "label_smoothing": trial.suggest_float(
+                "label_smoothing", 0.0, 0.2, step=0.05
+            ),
         }
     )
     return config
+
+
+def _completed_trials(study: optuna.Study) -> int:
+    return sum(trial.state == optuna.trial.TrialState.COMPLETE for trial in study.trials)
+
+
+def _trial_payload(study: optuna.Study) -> list[dict[str, Any]]:
+    return [
+        {
+            "number": trial.number,
+            "state": trial.state.name,
+            "value": trial.value,
+            "params": trial.params,
+            "user_attrs": trial.user_attrs,
+        }
+        for trial in study.trials
+    ]
 
 
 def run_search(
@@ -51,6 +73,7 @@ def run_search(
     final_epochs: int,
     skip_final: bool,
 ) -> dict[str, Any]:
+    """Tune each outer fold without exposing its test subset."""
     dataset = load_pt_dataset(dataset_path)
     splits = build_cv_splits(dataset, cv=cv, task=task)
     requested_device = str(base_config.get("device", "cuda"))
@@ -59,19 +82,26 @@ def run_search(
     device = torch.device(requested_device)
     output_dir.mkdir(parents=True, exist_ok=True)
     storage = f"sqlite:///{(output_dir / 'study.db').resolve().as_posix()}"
-    study = optuna.create_study(
-        study_name=f"{task}_{cv}",
-        direction="maximize",
-        sampler=optuna.samplers.TPESampler(seed=int(base_config["seed"]), multivariate=True),
-        storage=storage,
-        load_if_exists=True,
-    )
+    fold_searches: list[dict[str, Any]] = []
+    final_configs: list[dict[str, Any]] = []
 
-    def objective(trial: optuna.Trial) -> float:
-        config = candidate_config(trial, base_config, search_epochs)
-        fold_scores = []
-        print(f"\n##### Optuna trial {trial.number} / params={trial.params} #####", flush=True)
-        for split in splits:
+    for split in splits:
+        fold = int(split["fold"])
+        study = optuna.create_study(
+            study_name=f"{task}_{cv}_outer_fold_{fold}",
+            direction="maximize",
+            sampler=optuna.samplers.TPESampler(seed=int(base_config["seed"]) + fold),
+            storage=storage,
+            load_if_exists=True,
+        )
+
+        def objective(trial: optuna.Trial) -> float:
+            config = candidate_config(trial, base_config, search_epochs)
+            print(
+                f"\n##### outer fold {fold} / Optuna trial {trial.number} / "
+                f"params={trial.params} #####",
+                flush=True,
+            )
             result = train_fold(
                 dataset,
                 split,
@@ -83,75 +113,88 @@ def run_search(
                 evaluate_test=False,
                 verbose=False,
             )
-            fold_scores.append(float(result["best_validation_phase_macro_f1"]))
+            score = float(result["best_validation_phase_macro_f1"])
+            trial.set_user_attr("best_epoch", int(result["best_epoch"]))
+            print(
+                f"outer_fold={fold} trial={trial.number} "
+                f"validation_macro_f1={score:.4f}",
+                flush=True,
+            )
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
-        score = float(np.mean(fold_scores))
-        trial.set_user_attr("validation_fold_macro_f1", fold_scores)
-        print(
-            f"trial={trial.number} mean_validation_macro_f1={score:.4f} "
-            f"folds={[round(value, 4) for value in fold_scores]}",
-            flush=True,
+            return score
+
+        remaining = max(0, trials - _completed_trials(study))
+        if remaining:
+            study.optimize(objective, n_trials=remaining, gc_after_trial=True)
+
+        best_config = dict(base_config)
+        best_config.update(study.best_params)
+        if int(best_config["lstm_layers"]) == 1:
+            best_config["lstm_dropout"] = 0.0
+        best_config["max_epochs"] = final_epochs
+        best_config["run_name"] = "nested_optuna"
+        final_configs.append(best_config)
+        fold_payload = {
+            "fold": fold,
+            "completed_trials": _completed_trials(study),
+            "best_validation_macro_f1": float(study.best_value),
+            "best_trial": int(study.best_trial.number),
+            "best_params": study.best_params,
+            "best_config": best_config,
+        }
+        fold_searches.append(fold_payload)
+        (output_dir / f"fold_{fold}_trials.json").write_text(
+            json.dumps(_trial_payload(study), ensure_ascii=False, indent=2), encoding="utf-8"
         )
-        return score
+        print(f"\n##### outer fold {fold} best #####")
+        print(json.dumps(fold_payload, ensure_ascii=False, indent=2), flush=True)
 
-    completed_trials = sum(
-        trial.state == optuna.trial.TrialState.COMPLETE for trial in study.trials
-    )
-    remaining = max(0, trials - completed_trials)
-    if remaining:
-        study.optimize(objective, n_trials=remaining, gc_after_trial=True)
-
-    best_config = dict(base_config)
-    best_config.update(study.best_params)
-    best_config["max_epochs"] = final_epochs
-    best_config["run_name"] = "optuna_best"
-    best_payload = {
+    summary = {
+        "search_type": "nested_cv",
         "task": task,
         "cv": cv,
-        "study_trials": len(study.trials),
+        "trials_per_outer_fold": trials,
         "search_epochs": search_epochs,
         "final_epochs": final_epochs,
-        "best_validation_macro_f1": float(study.best_value),
-        "best_trial": int(study.best_trial.number),
-        "best_params": study.best_params,
-        "best_config": best_config,
+        "test_data_used_during_search": False,
+        "folds": fold_searches,
     }
-    (output_dir / "best_config.json").write_text(
-        json.dumps(best_config, ensure_ascii=False, indent=2), encoding="utf-8"
+    (output_dir / "best_configs.json").write_text(
+        json.dumps(final_configs, ensure_ascii=False, indent=2), encoding="utf-8"
     )
     (output_dir / "search_summary.json").write_text(
-        json.dumps(best_payload, ensure_ascii=False, indent=2), encoding="utf-8"
+        json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8"
     )
-    trials_payload = [
-        {
-            "number": trial.number,
-            "state": trial.state.name,
-            "value": trial.value,
-            "params": trial.params,
-            "user_attrs": trial.user_attrs,
-        }
-        for trial in study.trials
-    ]
-    (output_dir / "trials.json").write_text(
-        json.dumps(trials_payload, ensure_ascii=False, indent=2), encoding="utf-8"
-    )
-    print("\n##### Best hyperparameters #####")
-    print(json.dumps(best_payload, ensure_ascii=False, indent=2), flush=True)
 
     if not skip_final:
-        final_root = output_dir / "final"
-        run_cross_validation(dataset_path, task, cv, best_config, final_root)
-    return best_payload
+        final_dir = output_dir / "final" / f"{task}_{cv}_nested_optuna"
+        fold_results = [
+            train_fold(dataset, split, task, config, final_dir, device)
+            for split, config in zip(splits, final_configs)
+        ]
+        save_cross_validation_report(
+            dataset,
+            task,
+            cv,
+            fold_results,
+            final_configs,
+            final_dir,
+            device,
+            "nested_optuna",
+        )
+    return summary
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Optuna global search using validation Macro-F1")
+    parser = argparse.ArgumentParser(
+        description="Nested Optuna search with an untouched outer test subset"
+    )
     parser.add_argument("--data", required=True, type=Path)
     parser.add_argument("--task", required=True, choices=("four_class", "imagery_binary"))
     parser.add_argument("--cv", default="run", choices=("run", "trial"))
     parser.add_argument("--config", type=Path, default=Path("configs/train.json"))
-    parser.add_argument("--output", type=Path, default=Path("outputs/search"))
+    parser.add_argument("--output", type=Path, default=Path("outputs/search_nested"))
     parser.add_argument("--trials", type=int, default=24)
     parser.add_argument("--search-epochs", type=int, default=60)
     parser.add_argument("--final-epochs", type=int, default=200)

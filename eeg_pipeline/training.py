@@ -314,30 +314,22 @@ def _aggregate_cv(results: list[dict[str, Any]]) -> dict[str, Any]:
     return summary
 
 
-def run_cross_validation(
-    dataset_path: Path,
+def save_cross_validation_report(
+    dataset: dict[str, Any],
     task: str,
     cv: str,
-    config: dict[str, Any],
-    output_root: Path,
+    fold_results: list[dict[str, Any]],
+    training_config: dict[str, Any] | list[dict[str, Any]],
+    run_dir: Path,
+    device: torch.device,
+    run_name: str,
 ) -> dict[str, Any]:
-    dataset = load_pt_dataset(dataset_path)
-    splits = build_cv_splits(dataset, cv=cv, task=task)
-    requested_device = str(config.get("device", "cuda"))
-    if requested_device.startswith("cuda") and not torch.cuda.is_available():
-        raise RuntimeError("CUDA was requested but is not available; run training on the GPU server")
-    device = torch.device(requested_device)
-    run_name = str(config.get("run_name") or datetime.now().strftime("%Y%m%d_%H%M%S"))
-    run_dir = output_root / f"{task}_{cv}_{run_name}"
-    fold_results = [
-        train_fold(dataset, split, task, config, run_dir, device) for split in splits
-    ]
     report = {
         "task": task,
         "cv": cv,
         "device": str(device),
         "run_name": run_name,
-        "training_config": dict(config),
+        "training_config": training_config,
         "fold_count": len(fold_results),
         "primary_metric_level": "phase_or_trial",
         "folds": fold_results,
@@ -357,3 +349,33 @@ def run_cross_validation(
     save_cv_artifacts(report, run_dir, list(class_names))
     print(f"\nResults and confusion matrices saved to: {run_dir}", flush=True)
     return report
+
+
+def run_cross_validation(
+    dataset_path: Path,
+    task: str,
+    cv: str,
+    config: dict[str, Any],
+    output_root: Path,
+) -> dict[str, Any]:
+    dataset = load_pt_dataset(dataset_path)
+    splits = build_cv_splits(dataset, cv=cv, task=task)
+    requested_device = str(config.get("device", "cuda"))
+    if requested_device.startswith("cuda") and not torch.cuda.is_available():
+        raise RuntimeError("CUDA was requested but is not available; run training on the GPU server")
+    device = torch.device(requested_device)
+    run_name = str(config.get("run_name") or datetime.now().strftime("%Y%m%d_%H%M%S"))
+    run_dir = output_root / f"{task}_{cv}_{run_name}"
+    fold_results = [
+        train_fold(dataset, split, task, config, run_dir, device) for split in splits
+    ]
+    return save_cross_validation_report(
+        dataset,
+        task,
+        cv,
+        fold_results,
+        dict(config),
+        run_dir,
+        device,
+        run_name,
+    )
