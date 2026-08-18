@@ -126,7 +126,12 @@ Python 路径应包含：
 
 ```bash
 python -m pip install --upgrade pip
-python -m pip install torch==2.12.0 torchvision==0.27.0 --index-url https://download.pytorch.org/whl/cu130
+python -m pip install \
+  --retries 20 \
+  --timeout 1200 \
+  torch==2.12.0 \
+  torchvision==0.27.0 \
+  --index-url https://download.pytorch.org/whl/cu130
 ```
 
 本项目不需要 torchvision，但保留它方便以后运行图像神经网络。不要再安装系统 CUDA Toolkit；
@@ -149,6 +154,25 @@ GPU = NVIDIA GeForce RTX 5090
 ```
 
 如果 `cuda available = False`，不要继续训练，把完整输出发回来排查。
+
+### 如果下载中途出现 IncompleteRead 或 SSLEOFError
+
+先看命令行最左侧必须是 `(deep-learning)`，不能是 `(base)`。如果仍是 base：
+
+```bash
+source /home/haixin/miniforge3/etc/profile.d/conda.sh
+conda activate deep-learning
+which python
+```
+
+然后确认代理变量仍存在：
+
+```bash
+env | grep -i proxy
+```
+
+`IncompleteRead` 表示几百 MB 的 CUDA 包下载中途断线，不是版本错误。保持 Windows 的 SSH 反向代理窗口
+运行，重新执行上面带 `--retries 20 --timeout 1200` 的安装命令即可。安装结束前不要切回 base 环境。
 
 ## 8. Windows：上传已经生成的 PT
 
