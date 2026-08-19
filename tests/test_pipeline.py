@@ -7,7 +7,7 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from EEG_Model import EEG_CNN_BiLSTM_Attention
+from EEG_Model import EEG_CNN_Transformer
 from eeg_pipeline.preprocessing import TrialValidationError, build_trials, extract_log_bandpower
 from eeg_pipeline.reporting import save_cv_artifacts
 from eeg_pipeline.splits import build_cv_splits, make_trial_fold_assignment
@@ -166,7 +166,7 @@ class ModelTests(unittest.TestCase):
     def test_model_output_shapes(self):
         samples = torch.randn(2, 8, 200, 6)
         for class_count in (4, 2):
-            model = EEG_CNN_BiLSTM_Attention(channels=8, num_classes=class_count)
+            model = EEG_CNN_Transformer(channels=8, num_classes=class_count)
             with torch.no_grad():
                 output = model(samples)
             self.assertEqual(tuple(output.shape), (2, class_count))

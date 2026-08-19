@@ -14,7 +14,7 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, f1_score
 from torch.utils.data import DataLoader, TensorDataset
 
-from EEG_Model import EEG_CNN_BiLSTM_Attention
+from EEG_Model import EEG_CNN_Transformer
 
 from .splits import build_cv_splits
 
@@ -172,12 +172,14 @@ def train_fold(
         name: _make_loader(normalized, labels, split[name], batch_size, name == "train")
         for name in ("train", "val", "test")
     }
-    model = EEG_CNN_BiLSTM_Attention(
+    model = EEG_CNN_Transformer(
         channels=dataset["features"].shape[1],
         num_classes=num_classes,
-        lstm_hidden_size=int(config["lstm_hidden_size"]),
-        lstm_layers=int(config["lstm_layers"]),
-        lstm_dropout=float(config["lstm_dropout"]),
+        d_model=int(config["transformer_d_model"]),
+        num_heads=int(config["transformer_heads"]),
+        num_layers=int(config["transformer_layers"]),
+        dim_feedforward=int(config["transformer_feedforward"]),
+        transformer_dropout=float(config["transformer_dropout"]),
         classifier_dropout=float(config["classifier_dropout"]),
     ).to(device)
     criterion = nn.CrossEntropyLoss(
@@ -279,6 +281,7 @@ def train_fold(
         torch.save(
             {
                 "model_state": best_state,
+                "model_name": "EEG_CNN_Transformer",
                 "normalization_mean": mean,
                 "normalization_std": std,
                 "task": task,
