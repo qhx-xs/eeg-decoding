@@ -8,10 +8,10 @@ from eeg_pipeline.training import run_cross_validation
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Train CNN-Transformer with grouped CV")
+    parser = argparse.ArgumentParser(description="Train CNN-GRU-Transformer-Attention")
     parser.add_argument("--data", required=True, type=Path, help="Preprocessed .pt dataset")
     parser.add_argument("--task", required=True, choices=("four_class", "imagery_binary"))
-    parser.add_argument("--cv", required=True, choices=("run", "trial"))
+    parser.add_argument("--cv", required=True, choices=("random", "run", "trial"))
     parser.add_argument("--config", type=Path, default=Path("configs/train.json"))
     parser.add_argument("--output", type=Path, default=Path("outputs"))
     parser.add_argument("--epochs", type=int, help="Override fixed epoch count (early stopping is disabled)")

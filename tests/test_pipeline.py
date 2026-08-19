@@ -7,10 +7,10 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from EEG_Model import EEG_CNN_Transformer
+from EEG_Model import EEG_CNN_RNN_Transformer_Attention
 from eeg_pipeline.preprocessing import TrialValidationError, build_trials, extract_log_bandpower
 from eeg_pipeline.reporting import save_cv_artifacts
-from eeg_pipeline.splits import build_cv_splits, make_trial_fold_assignment
+from eeg_pipeline.splits import build_cv_splits, build_random_split, make_trial_fold_assignment
 from eeg_pipeline.training import load_pt_dataset, metrics_from_logits
 from inspect_edf import parse_tal, read_header
 
@@ -89,7 +89,7 @@ class FeatureTests(unittest.TestCase):
     def test_safe_pt_round_trip(self):
         payload = {
             "format_version": "eeg-bandpower-v1",
-            "features": torch.zeros(1, 8, 200, 6),
+            "features": torch.zeros(1, 8, 100, 6),
             "label_four": torch.tensor([0]),
             "label_object": torch.tensor([0]),
             "phase": torch.tensor([0]),
@@ -104,7 +104,7 @@ class FeatureTests(unittest.TestCase):
             path = Path(temp_dir) / "test.pt"
             torch.save(payload, path)
             loaded = load_pt_dataset(path)
-        self.assertEqual(tuple(loaded["features"].shape), (1, 8, 200, 6))
+        self.assertEqual(tuple(loaded["features"].shape), (1, 8, 100, 6))
 
 
 class SplitTests(unittest.TestCase):
@@ -161,12 +161,22 @@ class SplitTests(unittest.TestCase):
         self.assertEqual(metrics["phase_or_trial"]["sample_count"], 2)
         self.assertEqual(metrics["phase_or_trial"]["accuracy"], 1.0)
 
+    def test_random_window_split_is_stratified_and_disjoint(self):
+        dataset = self.dataset()
+        split = build_random_split(dataset, "four_class", random_state=42)
+        self.assertEqual([len(split[key]) for key in ("train", "val", "test")], [336, 72, 72])
+        all_indices = torch.cat([split[key] for key in ("train", "val", "test")])
+        self.assertEqual(len(torch.unique(all_indices)), len(dataset["features"]))
+        for name in ("train", "val", "test"):
+            counts = torch.bincount(dataset["label_four"][split[name]], minlength=4)
+            self.assertLessEqual(int(counts.max() - counts.min()), 1)
+
 
 class ModelTests(unittest.TestCase):
     def test_model_output_shapes(self):
-        samples = torch.randn(2, 8, 200, 6)
+        samples = torch.randn(2, 8, 100, 6)
         for class_count in (4, 2):
-            model = EEG_CNN_Transformer(channels=8, num_classes=class_count)
+            model = EEG_CNN_RNN_Transformer_Attention(channels=8, num_classes=class_count)
             with torch.no_grad():
                 output = model(samples)
             self.assertEqual(tuple(output.shape), (2, class_count))

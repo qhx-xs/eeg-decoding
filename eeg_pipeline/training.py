@@ -14,9 +14,9 @@ import torch.nn as nn
 from sklearn.metrics import accuracy_score, balanced_accuracy_score, confusion_matrix, f1_score
 from torch.utils.data import DataLoader, TensorDataset
 
-from EEG_Model import EEG_CNN_Transformer
+from EEG_Model import EEG_CNN_RNN_Transformer_Attention
 
-from .splits import build_cv_splits
+from .splits import build_cv_splits, build_random_split
 
 
 def seed_everything(seed: int) -> None:
@@ -50,8 +50,10 @@ def load_pt_dataset(path: Path) -> dict[str, Any]:
     if missing:
         raise ValueError(f"Dataset is missing required fields: {sorted(missing)}")
     features = dataset["features"]
-    if features.ndim != 4 or tuple(features.shape[1:]) != (8, 200, 6):
-        raise ValueError(f"Expected features [N,8,200,6], got {tuple(features.shape)}")
+    if features.ndim != 4 or features.shape[1] != 8 or features.shape[3] != 6:
+        raise ValueError(f"Expected features [N,8,T,6], got {tuple(features.shape)}")
+    if features.shape[2] < 16:
+        raise ValueError(f"Feature time dimension is too short: {features.shape[2]}")
     if not torch.isfinite(features).all():
         raise ValueError("Dataset contains non-finite features")
     return dataset
@@ -172,9 +174,13 @@ def train_fold(
         name: _make_loader(normalized, labels, split[name], batch_size, name == "train")
         for name in ("train", "val", "test")
     }
-    model = EEG_CNN_Transformer(
+    model = EEG_CNN_RNN_Transformer_Attention(
         channels=dataset["features"].shape[1],
         num_classes=num_classes,
+        cnn_dim=int(config["cnn_dim"]),
+        rnn_hidden_size=int(config["rnn_hidden_size"]),
+        rnn_layers=int(config["rnn_layers"]),
+        rnn_dropout=float(config["rnn_dropout"]),
         d_model=int(config["transformer_d_model"]),
         num_heads=int(config["transformer_heads"]),
         num_layers=int(config["transformer_layers"]),
@@ -281,7 +287,7 @@ def train_fold(
         torch.save(
             {
                 "model_state": best_state,
-                "model_name": "EEG_CNN_Transformer",
+                "model_name": "EEG_CNN_RNN_Transformer_Attention",
                 "normalization_mean": mean,
                 "normalization_std": std,
                 "task": task,
@@ -362,7 +368,18 @@ def run_cross_validation(
     output_root: Path,
 ) -> dict[str, Any]:
     dataset = load_pt_dataset(dataset_path)
-    splits = build_cv_splits(dataset, cv=cv, task=task)
+    if cv == "random":
+        splits = [
+            build_random_split(
+                dataset,
+                task,
+                random_state=int(config["seed"]),
+                train_fraction=float(config.get("train_fraction", 0.70)),
+                validation_fraction=float(config.get("validation_fraction", 0.15)),
+            )
+        ]
+    else:
+        splits = build_cv_splits(dataset, cv=cv, task=task)
     requested_device = str(config.get("device", "cuda"))
     if requested_device.startswith("cuda") and not torch.cuda.is_available():
         raise RuntimeError("CUDA was requested but is not available; run training on the GPU server")

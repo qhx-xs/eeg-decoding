@@ -24,8 +24,14 @@ def candidate_config(trial: optuna.Trial, base: dict[str, Any], epochs: int) -> 
             "learning_rate": trial.suggest_float("learning_rate", 1e-5, 3e-3, log=True),
             "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True),
             "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64]),
+            "cnn_dim": trial.suggest_categorical("cnn_dim", [32, 64, 96, 128]),
+            "rnn_hidden_size": trial.suggest_categorical(
+                "rnn_hidden_size", [32, 64, 96, 128, 192]
+            ),
+            "rnn_layers": trial.suggest_int("rnn_layers", 1, 3),
+            "rnn_dropout": trial.suggest_float("rnn_dropout", 0.1, 0.5, step=0.05),
             "transformer_d_model": trial.suggest_categorical(
-                "transformer_d_model", [64, 128, 256]
+                "transformer_d_model", [64, 128, 192, 256]
             ),
             "transformer_heads": trial.suggest_categorical(
                 "transformer_heads", [2, 4, 8]
@@ -198,7 +204,7 @@ def main() -> int:
     parser.add_argument("--output", type=Path, default=Path("outputs/search_nested"))
     parser.add_argument("--trials", type=int, default=24)
     parser.add_argument("--search-epochs", type=int, default=60)
-    parser.add_argument("--final-epochs", type=int, default=200)
+    parser.add_argument("--final-epochs", type=int, default=400)
     parser.add_argument("--skip-final", action="store_true")
     args = parser.parse_args()
     if min(args.trials, args.search_epochs, args.final_epochs) <= 0:

@@ -4,7 +4,7 @@ from typing import Any
 
 import numpy as np
 import torch
-from sklearn.model_selection import StratifiedKFold
+from sklearn.model_selection import StratifiedKFold, train_test_split
 
 
 def make_trial_fold_assignment(
@@ -71,3 +71,57 @@ def build_cv_splits(dataset: dict, cv: str, task: str) -> list[dict[str, torch.T
             raise ValueError(f"Empty subset in {cv} fold {test_fold}")
         output.append(split)
     return output
+
+
+def build_random_split(
+    dataset: dict,
+    task: str,
+    random_state: int = 42,
+    train_fraction: float = 0.70,
+    validation_fraction: float = 0.15,
+) -> dict[str, torch.Tensor | int]:
+    """Randomly stratify individual windows into one train/validation/test split.
+
+    This intentionally allows windows from the same trial in different subsets and
+    should therefore be treated as an exploratory, potentially optimistic split.
+    """
+    if task not in {"four_class", "imagery_binary"}:
+        raise ValueError("task must be 'four_class' or 'imagery_binary'")
+    if not 0 < train_fraction < 1 or not 0 < validation_fraction < 1:
+        raise ValueError("train_fraction and validation_fraction must be between 0 and 1")
+    if train_fraction + validation_fraction >= 1:
+        raise ValueError("train_fraction + validation_fraction must be below 1")
+
+    eligible = torch.arange(len(dataset["features"]))
+    if task == "imagery_binary":
+        eligible = eligible[dataset["phase"] == 1]
+    labels = dataset["label_four"] if task == "four_class" else dataset["label_object"]
+    eligible_np = eligible.numpy()
+    label_np = labels[eligible].numpy()
+    train_count = round(len(eligible_np) * train_fraction)
+    validation_count = round(len(eligible_np) * validation_fraction)
+    train_np, remainder_np = train_test_split(
+        eligible_np,
+        train_size=train_count,
+        random_state=random_state,
+        shuffle=True,
+        stratify=label_np,
+    )
+    remainder_labels = labels[torch.from_numpy(remainder_np)].numpy()
+    validation_np, test_np = train_test_split(
+        remainder_np,
+        train_size=validation_count,
+        random_state=random_state + 1,
+        shuffle=True,
+        stratify=remainder_labels,
+    )
+    split = {
+        "fold": 0,
+        "train": torch.from_numpy(np.sort(train_np)).long(),
+        "val": torch.from_numpy(np.sort(validation_np)).long(),
+        "test": torch.from_numpy(np.sort(test_np)).long(),
+    }
+    index_sets = {name: set(split[name].tolist()) for name in ("train", "val", "test")}
+    if any(index_sets[left] & index_sets[right] for left, right in (("train", "val"), ("train", "test"), ("val", "test"))):
+        raise AssertionError("Random split contains duplicate indices")
+    return split

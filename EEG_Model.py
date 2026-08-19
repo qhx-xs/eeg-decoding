@@ -335,3 +335,91 @@ class EEG_CNN_Transformer(nn.Module):
         )
         encoded = self.transformer(tokens)
         return self.classifier(encoded[:, 0])
+
+
+class EEG_CNN_RNN_Transformer_Attention(nn.Module):
+    """CNN -> bidirectional GRU -> Transformer -> additive attention classifier."""
+
+    def __init__(
+        self,
+        channels=8,
+        num_classes=4,
+        cnn_dim=64,
+        rnn_hidden_size=96,
+        rnn_layers=2,
+        rnn_dropout=0.25,
+        d_model=192,
+        num_heads=4,
+        num_layers=2,
+        dim_feedforward=384,
+        transformer_dropout=0.25,
+        classifier_dropout=0.3,
+        max_sequence_length=256,
+    ):
+        super().__init__()
+        if d_model % num_heads != 0:
+            raise ValueError("d_model must be divisible by num_heads")
+        self.cnn_extractor = nn.Sequential(
+            nn.Conv2d(channels, 32, kernel_size=(1, 5), padding=(0, 2)),
+            nn.GELU(),
+            nn.BatchNorm2d(32),
+            nn.MaxPool2d((1, 2)),
+            nn.Conv2d(32, cnn_dim, kernel_size=(3, 3), padding=(1, 1)),
+            nn.GELU(),
+            nn.BatchNorm2d(cnn_dim),
+            nn.MaxPool2d((2, 2)),
+            nn.AdaptiveAvgPool2d((1, None)),
+        )
+        self.rnn = nn.GRU(
+            input_size=cnn_dim,
+            hidden_size=rnn_hidden_size,
+            num_layers=rnn_layers,
+            batch_first=True,
+            bidirectional=True,
+            dropout=rnn_dropout if rnn_layers > 1 else 0.0,
+        )
+        self.rnn_projection = nn.Linear(rnn_hidden_size * 2, d_model)
+        self.position_embedding = nn.Parameter(
+            torch.zeros(1, max_sequence_length, d_model)
+        )
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=dim_feedforward,
+            dropout=transformer_dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=False,
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer, num_layers=num_layers, norm=nn.LayerNorm(d_model)
+        )
+        attention_hidden = max(32, d_model // 2)
+        self.attention = nn.Sequential(
+            nn.Linear(d_model, attention_hidden),
+            nn.Tanh(),
+            nn.Linear(attention_hidden, 1, bias=False),
+        )
+        self.classifier = nn.Sequential(
+            nn.LayerNorm(d_model),
+            nn.Linear(d_model, max(64, d_model // 2)),
+            nn.GELU(),
+            nn.Dropout(classifier_dropout),
+            nn.Linear(max(64, d_model // 2), num_classes),
+        )
+        nn.init.trunc_normal_(self.position_embedding, std=0.02)
+
+    def forward(self, x):
+        if x.ndim != 4:
+            raise ValueError(f"Expected [batch, channels, time, bands], got {tuple(x.shape)}")
+        features = self.cnn_extractor(x.permute(0, 1, 3, 2))
+        tokens = features.squeeze(2).transpose(1, 2)
+        recurrent, _ = self.rnn(tokens)
+        tokens = self.rnn_projection(recurrent)
+        if tokens.size(1) > self.position_embedding.size(1):
+            raise ValueError("Token sequence exceeds max_sequence_length")
+        tokens = tokens + self.position_embedding[:, :tokens.size(1)]
+        encoded = self.transformer(tokens)
+        weights = F.softmax(self.attention(encoded).squeeze(-1), dim=1)
+        context = torch.sum(encoded * weights.unsqueeze(-1), dim=1)
+        return self.classifier(context)

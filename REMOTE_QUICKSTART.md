@@ -174,24 +174,28 @@ env | grep -i proxy
 `IncompleteRead` 表示几百 MB 的 CUDA 包下载中途断线，不是版本错误。保持 Windows 的 SSH 反向代理窗口
 运行，重新执行上面带 `--retries 20 --timeout 1200` 的安装命令即可。安装结束前不要切回 base 环境。
 
-## 8. Windows：上传已经生成的 PT
+## 8. 服务器：从原始 EDF 重新生成 1 秒数据
 
-先在服务器创建目录：
+原始 EDF 已上传到服务器时，先确认目录并创建数据目录：
 
 ```bash
 mkdir -p /home/haixin/projects/eeg-decoding/data
+find /你的原始数据目录 -maxdepth 1 -iname '*.edf' | head
 ```
 
-然后在 Windows 上另开 PowerShell（不是服务器终端）执行：
-
-```powershell
-scp "C:\Users\QHX\Desktop\cnn_lstm\data\sub03_eeg.pt" "XS-company-server:/home/haixin/projects/eeg-decoding/data/sub03_eeg.pt"
-```
-
-回到服务器检查，大小应约为 18 MB：
+每个 4 秒刺激/想象阶段会切成四个互不重叠的 1 秒窗：
 
 ```bash
-ls -lh /home/haixin/projects/eeg-decoding/data/sub03_eeg.pt
+python preprocess_edf.py \
+  --input /你的原始数据目录 \
+  --output data/sub03_eeg_1s.pt \
+  --config configs/preprocess.json
+```
+
+预期是 640 个窗口，形状 `[640,8,100,6]`：
+
+```bash
+ls -lh data/sub03_eeg_1s.pt
 ```
 
 ## 9. 以后每次登录后的初始化
@@ -207,13 +211,13 @@ cd /home/haixin/projects/eeg-decoding
 安全回读 PT：
 
 ```bash
-python -c 'from pathlib import Path; from eeg_pipeline.training import load_pt_dataset; d=load_pt_dataset(Path("data/sub03_eeg.pt")); print(d["features"].shape); print("finite =", d["features"].isfinite().all().item())'
+python -c 'from pathlib import Path; from eeg_pipeline.training import load_pt_dataset; d=load_pt_dataset(Path("data/sub03_eeg_1s.pt")); print(d["features"].shape); print("finite =", d["features"].isfinite().all().item())'
 ```
 
 预期：
 
 ```text
-torch.Size([480, 8, 200, 6])
+torch.Size([640, 8, 100, 6])
 finite = True
 ```
 
@@ -223,36 +227,36 @@ finite = True
 python -m unittest discover -s tests -v
 ```
 
-应显示 `Ran 8 tests` 和 `OK`。
+应显示所有测试和 `OK`。
 
-## 11. 服务器：运行正式训练
+## 11. 服务器：全局搜索并重复正式训练
 
-先运行正式跨 run 四分类：
+四分类使用固定随机窗口 70%/15%/15% 切分，搜索 60 组参数，再用最佳参数训练 400 轮、重复 5 次：
 
 ```bash
-python train.py --data data/sub03_eeg.pt --task four_class --cv run
+python global_search.py --data data/sub03_eeg_1s.pt --task four_class \
+  --trials 60 --search-epochs 100 --final-epochs 400 --repeats 5
 ```
 
-正式跨 run 想象二分类：
+想象二分类：
 
 ```bash
-python train.py --data data/sub03_eeg.pt --task imagery_binary --cv run
+python global_search.py --data data/sub03_eeg_1s.pt --task imagery_binary \
+  --trials 60 --search-epochs 100 --final-epochs 400 --repeats 5
 ```
 
-辅助 trial 五折：
+搜索可在 tmux 中运行；同一命令中断后可继续。查看最终结果：
 
 ```bash
-python train.py --data data/sub03_eeg.pt --task four_class --cv trial
-python train.py --data data/sub03_eeg.pt --task imagery_binary --cv trial
+cat outputs/global_search/four_class/search_summary.json
+cat outputs/global_search/imagery_binary/search_summary.json
 ```
 
 结果目录：
 
 ```text
-outputs/four_class_run/
-outputs/imagery_binary_run/
-outputs/four_class_trial/
-outputs/imagery_binary_trial/
+outputs/global_search/four_class/
+outputs/global_search/imagery_binary/
 ```
 
 ## 12. tmux 常用操作
@@ -278,9 +282,9 @@ watch -n 2 nvidia-smi
 Windows：verge-mihomo -> 保持 ssh -R 反向代理
 服务器：source conda.sh -> conda activate deep-learning
 项目：cd /home/haixin/projects/eeg-decoding -> git pull
-数据：Windows 用 scp 上传 sub03_eeg.pt 到 data/
+数据：服务器原始 EDF -> preprocess_edf.py -> sub03_eeg_1s.pt
 检查：torch.cuda.is_available() 必须为 True，测试必须 OK
-训练：python train.py --data data/sub03_eeg.pt --task four_class --cv run
+训练：python global_search.py --data data/sub03_eeg_1s.pt --task four_class --trials 60 --search-epochs 100 --final-epochs 400 --repeats 5
 ```
 
 PyTorch 安装命令依据官方版本页：
