@@ -18,21 +18,24 @@ from eeg_pipeline.training import (
 
 def candidate_config(trial: optuna.Trial, base: dict[str, Any], epochs: int) -> dict[str, Any]:
     config = dict(base)
-    lstm_layers = trial.suggest_int("lstm_layers", 1, 2)
     config.update(
         {
             "max_epochs": epochs,
             "learning_rate": trial.suggest_float("learning_rate", 1e-5, 3e-3, log=True),
             "weight_decay": trial.suggest_float("weight_decay", 1e-6, 1e-2, log=True),
             "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64]),
-            "lstm_hidden_size": trial.suggest_categorical(
-                "lstm_hidden_size", [16, 32, 64, 128]
+            "transformer_d_model": trial.suggest_categorical(
+                "transformer_d_model", [64, 128, 256]
             ),
-            "lstm_layers": lstm_layers,
-            "lstm_dropout": (
-                trial.suggest_float("lstm_dropout", 0.1, 0.6, step=0.1)
-                if lstm_layers > 1
-                else 0.0
+            "transformer_heads": trial.suggest_categorical(
+                "transformer_heads", [2, 4, 8]
+            ),
+            "transformer_layers": trial.suggest_int("transformer_layers", 1, 4),
+            "transformer_feedforward": trial.suggest_categorical(
+                "transformer_feedforward", [128, 256, 512]
+            ),
+            "transformer_dropout": trial.suggest_float(
+                "transformer_dropout", 0.1, 0.5, step=0.1
             ),
             "classifier_dropout": trial.suggest_float(
                 "classifier_dropout", 0.1, 0.6, step=0.1
@@ -130,8 +133,6 @@ def run_search(
 
         best_config = dict(base_config)
         best_config.update(study.best_params)
-        if int(best_config["lstm_layers"]) == 1:
-            best_config["lstm_dropout"] = 0.0
         best_config["max_epochs"] = final_epochs
         best_config["run_name"] = "nested_optuna"
         final_configs.append(best_config)

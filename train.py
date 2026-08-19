@@ -8,7 +8,7 @@ from eeg_pipeline.training import run_cross_validation
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Train CNN-BiLSTM-Attention with grouped CV")
+    parser = argparse.ArgumentParser(description="Train CNN-Transformer with grouped CV")
     parser.add_argument("--data", required=True, type=Path, help="Preprocessed .pt dataset")
     parser.add_argument("--task", required=True, choices=("four_class", "imagery_binary"))
     parser.add_argument("--cv", required=True, choices=("run", "trial"))

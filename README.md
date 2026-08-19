@@ -1,7 +1,8 @@
-# EDF 六频带 CNN-BiLSTM-Attention
+# EDF 六频带 CNN-Transformer
 
 本项目把带 EDF+ trigger 的 EEG 记录转换成六频带时序特征，并使用按 trial/run 分组的
-CNN-BiLSTM-Attention 完成四分类与想象二分类。数据、模型权重和带本机路径的报告不会提交到 Git。
+CNN-Transformer 完成四分类与想象二分类。CNN 提取局部时频特征，Transformer Encoder
+对时间 token 建模并使用 CLS token 分类。数据、模型权重和带本机路径的报告不会提交到 Git。
 
 ## 数据定义
 
@@ -77,7 +78,7 @@ python train.py --data data/sub03_eeg.pt --task four_class --cv run \
 
 ## Optuna 参数搜索
 
-`search.py` 用嵌套 TPE 贝叶斯优化搜索学习率、权重衰减、batch size、LSTM 宽度/层数、dropout
+`search.py` 用嵌套 TPE 贝叶斯优化搜索学习率、权重衰减、batch size、Transformer 维度/头数/层数、dropout
 和 label smoothing。每个外层测试 fold 都单独在其训练/验证数据上搜索参数，当前测试 fold 在搜索
 期间完全不可见。这样不会因为同一个 run 在另一折充当验证集而间接泄漏测试信息。搜索结束后会
 用每个外层 fold 各自的最佳参数固定训练 200 轮并生成上述混淆矩阵：

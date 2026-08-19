@@ -250,3 +250,88 @@ class EEG_CNN_BiLSTM_Attention(nn.Module):
         output = self.fc(context_vector)
 
         return output
+
+
+# ==============================================================================
+# EEG_CNN_Transformer
+# ==============================================================================
+
+class EEG_CNN_Transformer(nn.Module):
+    """CNN 时频特征提取器 + Transformer Encoder EEG 分类器。"""
+
+    def __init__(
+        self,
+        channels=8,
+        num_classes=4,
+        d_model=128,
+        num_heads=4,
+        num_layers=2,
+        dim_feedforward=256,
+        transformer_dropout=0.2,
+        classifier_dropout=0.3,
+        max_sequence_length=512,
+    ):
+        super().__init__()
+        if d_model % num_heads != 0:
+            raise ValueError("d_model must be divisible by num_heads")
+
+        self.channels = channels
+        self.num_classes = num_classes
+        self.cnn_extractor = nn.Sequential(
+            nn.Conv2d(channels, 32, kernel_size=(1, 5), padding=(0, 2)),
+            nn.ReLU(),
+            nn.BatchNorm2d(32),
+            nn.MaxPool2d(kernel_size=(1, 2)),
+            nn.Conv2d(32, 64, kernel_size=(5, 5), padding=(2, 2)),
+            nn.ReLU(),
+            nn.BatchNorm2d(64),
+            nn.MaxPool2d(kernel_size=(2, 2)),
+            nn.Conv2d(64, d_model, kernel_size=(3, 3), padding=(1, 1)),
+            nn.ReLU(),
+            nn.BatchNorm2d(d_model),
+            nn.AdaptiveAvgPool2d((1, None)),
+        )
+
+        self.cls_token = nn.Parameter(torch.zeros(1, 1, d_model))
+        self.position_embedding = nn.Parameter(
+            torch.zeros(1, max_sequence_length + 1, d_model)
+        )
+        self.embedding_dropout = nn.Dropout(transformer_dropout)
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=d_model,
+            nhead=num_heads,
+            dim_feedforward=dim_feedforward,
+            dropout=transformer_dropout,
+            activation="gelu",
+            batch_first=True,
+            norm_first=False,
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
+            norm=nn.LayerNorm(d_model),
+        )
+        self.classifier = nn.Sequential(
+            nn.Linear(d_model, 64),
+            nn.GELU(),
+            nn.Dropout(classifier_dropout),
+            nn.Linear(64, num_classes),
+        )
+        nn.init.trunc_normal_(self.cls_token, std=0.02)
+        nn.init.trunc_normal_(self.position_embedding, std=0.02)
+
+    def forward(self, x):
+        if x.ndim != 4:
+            raise ValueError(f"Expected [batch, channels, time, bands], got {tuple(x.shape)}")
+        # [B,C,T,F] -> [B,C,F,T] -> [B,D,1,T'] -> [B,T',D]
+        features = self.cnn_extractor(x.permute(0, 1, 3, 2))
+        tokens = features.squeeze(2).transpose(1, 2)
+        if tokens.size(1) + 1 > self.position_embedding.size(1):
+            raise ValueError("Token sequence exceeds max_sequence_length")
+        cls = self.cls_token.expand(tokens.size(0), -1, -1)
+        tokens = torch.cat((cls, tokens), dim=1)
+        tokens = self.embedding_dropout(
+            tokens + self.position_embedding[:, :tokens.size(1)]
+        )
+        encoded = self.transformer(tokens)
+        return self.classifier(encoded[:, 0])

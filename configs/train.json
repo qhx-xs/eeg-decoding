@@ -9,8 +9,10 @@
   "gradient_clip_norm": 5.0,
   "minimum_learning_rate": 0.000001,
   "log_every_epochs": 10,
-  "lstm_hidden_size": 128,
-  "lstm_layers": 2,
-  "lstm_dropout": 0.5,
-  "classifier_dropout": 0.5
+  "transformer_d_model": 128,
+  "transformer_heads": 4,
+  "transformer_layers": 2,
+  "transformer_feedforward": 256,
+  "transformer_dropout": 0.2,
+  "classifier_dropout": 0.3
 }
